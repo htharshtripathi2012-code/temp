@@ -1,0 +1,247 @@
+---
+title: "Historical Climate Analysis: Columbus, Ohio (1979-2021)"
+author: "Harsh"
+date: today
+format:
+  html:
+    theme: cosmo
+    toc: true
+    code-fold: true
+    embed-resources: true
+---
+
+## Introduction
+
+This document provides an informative overview of daily maximum temperatures, monthly averages, yearly peak trends, and heat anomalies in Columbus, Ohio, covering the period from 1979 to 2021. The dataset is retrieved dynamically from the Regional Climate Centers ACIS API using weather observations from John Glenn Columbus International Airport (CMH).
+
+```{r setup, include=FALSE}
+#| message: false
+#| warning: false
+library(tidyverse)
+library(jsonlite)
+library(httr)
+library(lubridate)
+library(knitr)
+
+if (!dir.exists("csv")) dir.create("csv")
+if (!dir.exists("images")) dir.create("images")
+```
+
+## Data Retrieval and Unpacking
+
+We execute a live API fetch targeting station `USW00014821` (Columbus, OH) to gather maximum daily temperatures (`maxt`). To avoid package dependency issues, rows are flattened robustly using mapping utilities from `purrr`.
+
+### Data Sources and Attribution
+
+- Primary dataset pulled from the ACIS API at `http://data.rcc-acis.org/StnData`
+- Station identifier: `USW00014821` (John Glenn Columbus International Airport, Columbus, OH)
+- Weather element: `maxt` (daily maximum temperature)
+- Processed with `tidyverse`, `jsonlite`, `httr`, and `lubridate`
+
+```{r data-fetch, cache=TRUE, message=FALSE, warning=FALSE}
+api_url <- "http://data.rcc-acis.org/StnData"
+query_params <- list(
+  sid = "USW00014821",
+  sdate = "1979-01-01",
+  edate = "2021-12-31",
+  elems = "maxt"
+)
+
+response <- POST(api_url, body = query_params, encode = "json")
+data_json <- content(response, "parsed")
+
+weather_df <- tibble(
+  date_raw = map_chr(data_json$data, ~ .x[[1]]),
+  max_temp_raw = map_chr(data_json$data, ~ .x[[2]])
+) %>%
+  mutate(
+    date = as.Date(date_raw),
+    max_temp = as.numeric(max_temp_raw)
+  ) %>%
+  filter(!is.na(max_temp))
+
+write_csv(weather_df, "csv/01_columbus_temperatures_1979_2021.csv")
+
+plot_df <- weather_df %>%
+  mutate(
+    year = year(date),
+    month = month(date),
+    day = day(date),
+    dummy_date = as.Date(paste(2020, month, day, sep = "-")),
+    month_label = factor(month(date), levels = 1:12, labels = month.abb),
+    decade = floor(year / 10) * 10
+  ) %>%
+  filter(!is.na(dummy_date))
+
+decade_month <- plot_df %>%
+  group_by(decade, month_label) %>%
+  summarize(mean_max = mean(max_temp, na.rm = TRUE), .groups = "drop")
+
+heatwave_days <- plot_df %>%
+  filter(year == 2021, month == 6, day %in% c(26, 27, 28))
+
+historical_data <- plot_df %>%
+  anti_join(heatwave_days, by = "date")
+```
+
+## Visual Analytics
+
+### 1. Daily Maximum Temperature Cloud
+
+This plot stacks over 40 years of continuous daily metrics onto a uniform annual scale. It highlights baseline data points along with historical reference frames.
+
+```{r daily-cloud, fig.width=11, fig.height=8, warning=FALSE}
+plt1 <- ggplot() +
+  geom_point(data = historical_data, aes(x = dummy_date, y = max_temp),
+             color = "#6c757d", alpha = 0.15, size = 1.1, shape = 16) +
+  geom_point(data = heatwave_days, aes(x = dummy_date, y = max_temp),
+             color = "#b22222", alpha = 1, size = 3.5, shape = 16) +
+  annotate("text", x = as.Date("2020-07-02"), y = 104,
+           label = "Last 3 days", color = "#b22222", fontface = "bold", hjust = 0, size = 4.5) +
+  scale_y_continuous(limits = c(10, 125), breaks = c(20, 40, 60, 80, 100, 120),
+                     labels = c("20", "40", "60", "80", "100", "120 deg. Fahrenheit")) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b.") +
+  labs(title = "Daily maximum temperatures in Columbus, 1979-2021", x = NULL, y = NULL) +
+  theme_minimal(base_family = "sans") +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, color = "#212529", hjust = 0, margin = margin(b = 20)),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    panel.grid.major.y = element_line(color = "#ebebeb", size = 0.5),
+    axis.text.x = element_text(size = 11, color = "#495057"),
+    axis.text.y = element_text(size = 11, color = "#495057"),
+    axis.ticks.x = element_line(color = "#212529", size = 0.5),
+    axis.line.x = element_line(color = "#212529", size = 0.6)
+  )
+
+print(plt1)
+ggsave("images/01_columbus_max_temp_distribution.png", plot = plt1, width = 11, height = 8, dpi = 300, bg = "white")
+```
+
+### 2. Historical Monthly Averages
+
+Aggregating the multi-decade observations clarifies macro shifts and establishes a robust baseline for seasonal temperature cycles.
+
+```{r monthly-averages, fig.width=11, fig.height=8}
+monthly_avg <- plot_df %>%
+  group_by(month) %>%
+  summarize(avg_max = mean(max_temp, na.rm = TRUE)) %>%
+  mutate(dummy_date = as.Date(paste(2020, month, "15", sep = "-")))
+
+plt2 <- ggplot(monthly_avg, aes(x = dummy_date, y = avg_max)) +
+  geom_line(color = "#2b6cb0", size = 1.5) +
+  geom_point(color = "#2b6cb0", size = 3) +
+  scale_y_continuous(limits = c(30, 90), breaks = seq(30, 90, 10)) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b.") +
+  labs(title = "Average Historical Maximum Temperatures by Month",
+       subtitle = "Columbus, OH (1979-2021 Mean Baseline)", x = NULL, y = "Degrees Fahrenheit") +
+  theme_minimal(base_family = "sans") +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, color = "#212529"),
+    panel.grid.minor = element_blank(),
+    axis.line.x = element_line(color = "#212529", size = 0.6)
+  )
+
+print(plt2)
+ggsave("images/02_columbus_monthly_averages.png", plot = plt2, width = 11, height = 8, dpi = 300, bg = "white")
+```
+
+### 2b. Monthly Temperature Distribution
+
+This boxplot shows the full distribution of daily maximum temperatures by month.
+
+```{r monthly-distribution, fig.width=11, fig.height=8}
+plt2b <- ggplot(plot_df, aes(x = month_label, y = max_temp)) +
+  geom_boxplot(fill = "#3182bd", alpha = 0.7, outlier.color = "#de2d26") +
+  labs(title = "Monthly Distribution of Daily Maximum Temperatures",
+       subtitle = "Columbus, OH (1979-2021)", x = "Month", y = "Daily Max Temperature (°F)") +
+  theme_minimal(base_family = "sans") +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, color = "#212529"),
+    axis.text.x = element_text(size = 11, color = "#495057"),
+    axis.text.y = element_text(size = 11, color = "#495057")
+  )
+
+print(plt2b)
+ggsave("images/02b_columbus_monthly_distribution.png", plot = plt2b, width = 11, height = 8, dpi = 300, bg = "white")
+```
+
+### 2c. Climate Decades Heatmap
+
+This heatmap summarizes average monthly maximum temperatures for each decade.
+
+```{r decades-heatmap, fig.width=11, fig.height=8}
+plt2c <- ggplot(decade_month, aes(x = month_label, y = factor(decade), fill = mean_max)) +
+  geom_tile(color = "#ffffff", size = 0.25) +
+  scale_fill_viridis_c(option = "inferno", name = "Avg Max (°F)") +
+  labs(title = "Decadal Monthly Heatmap of Average Maximum Temperatures",
+       subtitle = "Columbus, OH (1979-2021)", x = "Month", y = "Decade") +
+  theme_minimal(base_family = "sans") +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, color = "#212529"),
+    axis.text.x = element_text(size = 11, color = "#495057"),
+    axis.text.y = element_text(size = 11, color = "#495057")
+  )
+
+print(plt2c)
+ggsave("images/02c_columbus_decades_heatmap.png", plot = plt2c, width = 11, height = 8, dpi = 300, bg = "white")
+```
+
+### 3. Annual Peak Spikes
+
+Tracking the highest temperature absolute peak reached each year reveals macro patterns in extreme weather fluctuations.
+
+```{r yearly-peaks, fig.width=11, fig.height=8, message=FALSE}
+yearly_peaks <- plot_df %>%
+  group_by(year) %>%
+  summarize(peak_temp = max(max_temp, na.rm = TRUE))
+
+plt3 <- ggplot(yearly_peaks, aes(x = year, y = peak_temp)) +
+  geom_line(color = "#4a5568", size = 0.8, alpha = 0.7) +
+  geom_point(color = "#e53e3e", size = 2) +
+  geom_smooth(method = "lm", color = "#2d3748", linetype = "dashed", se = FALSE, size = 1) +
+  scale_x_continuous(breaks = seq(1980, 2020, 5)) +
+  labs(title = "Highest Temperature Recorded Each Year",
+       subtitle = "Columbus, OH (1979-2021 Peak Spikes with Trendline)", x = "Year", y = "Degrees Fahrenheit") +
+  theme_minimal(base_family = "sans") +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, color = "#212529"),
+    panel.grid.minor = element_blank(),
+    axis.line.x = element_line(color = "#212529", size = 0.6)
+  )
+
+print(plt3)
+ggsave("images/03_columbus_yearly_max_trends.png", plot = plt3, width = 11, height = 8, dpi = 300, bg = "white")
+```
+
+### 4. Anomaly Heat Count (≥ 90°F)
+
+An informative metric for thermal climate shift tracking is measuring volume thresholds. Below is the total count of days per year matching or exceeding a 90°F threshold.
+
+```{r anomaly-heat-count, fig.width=11, fig.height=8}
+anomaly_counts <- plot_df %>%
+  filter(max_temp >= 90) %>%
+  group_by(year) %>%
+  count(name = "days_above_90")
+
+all_years <- tibble(year = 1979:2021)
+anomaly_counts <- all_years %>%
+  left_join(anomaly_counts, by = "year") %>%
+  replace_na(list(days_above_90 = 0))
+
+plt4 <- ggplot(anomaly_counts, aes(x = year, y = days_above_90)) +
+  geom_col(fill = "#dd6b20", width = 0.7) +
+  scale_x_continuous(breaks = seq(1980, 2020, 5)) +
+  labs(title = "Annual Anomaly Heat Count",
+       subtitle = "Number of Days Per Year Reaching or Exceeding 90°F in Columbus", x = "Year", y = "Number of Days") +
+  theme_minimal(base_family = "sans") +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, color = "#212529"),
+    panel.grid.minor = element_blank(),
+    axis.line.x = element_line(color = "#212529", size = 0.6)
+  )
+
+print(plt4)
+ggsave("images/04_columbus_anomaly_days_count.png", plot = plt4, width = 11, height = 8, dpi = 300, bg = "white")
+```
